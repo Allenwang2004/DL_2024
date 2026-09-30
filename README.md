@@ -1,29 +1,17 @@
-# Deep Learning — Challenge Portfolio
+# NYCU_DL - Deep Learning, Fall 2024
 
-> 深度學習 · 113 學年度下學期 (Spring 2025)
+Coursework of the deep learning class, plus a
+final project on symbolic music generation.
 
-Coursework and experiments for the **PDL (Practical Deep Learning)** challenge series, plus a
-set of standalone generative-model implementations and a final project on symbolic music
-generation.
-
-The five challenges (`CA0`–`CA4`) form a deliberate progression through the modern deep-learning
-stack: from the statistics of a training set, through function approximation theory, model
-calibration, sequence modelling, and finally self-attention and transfer learning.
-
+### Quick View
 | # | Folder | Topic | Backbone | Dataset |
 |---|--------|-------|----------|---------|
 | 0 | [CA0/](CA0/) | Class imbalance & per-class robustness | ResNet-18 | CIFAR-10 |
 | 1 | [CA1/](CA1/) | Function upscaling & the role of activations | MLP | Synthetic band-limited signals |
 | 2 | [CA2/](CA2/) | Reliability, calibration, dropout ensembles | VGG-16 | CIFAR-10 |
-| 3 | [CA3/](CA3/) | Sequence models & padding dynamics | CNN / RNN / GRU | IMDB |
+| 3 | [CA3/](CA3/) | Sequence models & padding dynamics | CNN / RNN / GRU / LSTM | IMDB |
 | 4 | [CA4/](CA4/) | Contextual word embeddings | BERT | IMDB |
-| — | [GAN/](GAN/), [RBM/](RBM/) | Generative models from scratch | — | `sklearn` digits |
 | — | [FinalProject/](FinalProject/) | Symbolic music generation | Bi-GRU | MIDI synthesised from stock prices |
-| — | [PDL/](PDL/) | Reference code (*Python Deep Learning*, Packt) | — | — |
-
-Each challenge folder contains the **assignment specification** (`PDL_challenge_*.pdf`) next to
-the notebooks that answer it. Figures below are the actual outputs stored in those notebooks —
-nothing is re-drawn or idealised.
 
 ---
 
@@ -101,17 +89,18 @@ These are real limitations of the implementation, recorded here rather than hidd
 
 ## CA1 — Neural Function Upscaling and the Role of Activations
 
-> *Spec: [`CA1/PDL_challenge_1.pdf`](CA1/PDL_challenge_1.pdf) · Code: [`CA1/Challenge1.ipynb`](CA1/Challenge1.ipynb), [`CA1/Task1.py`](CA1/Task1.py), [`CA1/Task2.py`](CA1/Task2.py)*
+> *Spec: [`CA1/PDL_challenge_1.pdf`](CA1/PDL_challenge_1.pdf) · Code: [`CA1/Challenge1.ipynb`](CA1/Challenge1.ipynb) (PyTorch)*
 
 ### Problem setting
 
 Reconstructing a signal from samples is classically solved by sinc interpolation under
-Nyquist–Shannon. This challenge asks what a DNN does with the same problem, and where its
-inductive bias helps or hurts.
+Nyquist–Shannon. This challenge asks what a DNN does with the same problem, and how the
+architecture, the activation function, the amount of data and the sampling pattern shape the result.
 
-Band-limited functions are synthesised in the frequency domain: draw 50 complex Fourier
+Band-limited functions are synthesised in the frequency domain: draw 49 random complex Fourier
 coefficients, impose Hermitian symmetry (`c₋ₖ = c̄ₖ`) so the inverse FFT is real-valued, and
-transform to a length-512 discrete signal.
+transform to a length-512 discrete signal. A fixed scale factor gives the signals unit variance,
+so every MSE below can be read as the fraction of signal energy that is not reproduced.
 
 ```python
 coefficients            = np.zeros(512, dtype=np.complex128)
@@ -120,286 +109,497 @@ coefficients[-49:]      = coefficients[1:50][::-1].conj()   # Hermitian symmetry
 time_domain_function    = np.fft.ifft(coefficients).real
 ```
 
+Every configuration is trained with Adam and MSE until early stopping, and repeated over 3 random
+initialisations; figures report the mean (and standard deviation where shown).
+
 ### Task 1 — memorising a single function (10,000-neuron budget)
 
-The network maps a scalar `x ∈ [1, 512]` to a scalar amplitude `y`, trained under MSE with Adam.
+The network maps a scalar position `x` (rescaled to [-1, 1]) to the amplitude `y` of one fixed
+function, trained on M of its 512 points. The quantity of interest is the **held-out MSE** on the
+positions the network never saw, i.e. how it interpolates between training points. The target has
+variance 0.60, so an MSE near 0.60 means the network outputs little more than a flat line.
 
 <p align="center">
-  <img src="assets/ca1-task1-loss.png" width="46%">
-  <img src="assets/ca1-task1-reconstruction.png" width="52%"><br>
-  <em><b>Fig. 1.1 / 1.2</b> — Left: MSE falls from 1.6 to ~0.02 within 250 of 2,000 epochs, then
-  crawls. Right: the reconstruction is near-perfect over roughly the first 170 samples and then
-  <b>flattens to the signal mean</b>. This is the ReLU-MLP spectral bias in its purest form: the
-  network fits low frequencies first and, given a scalar coordinate input with no positional
-  encoding, simply never acquires the high-frequency detail in the rest of the domain. A final
-  training MSE of 0.041 is a misleadingly good summary of a reconstruction that is qualitatively
-  wrong over two thirds of its support.</em>
+  <img src="assets/ca1-task1-heldout-heatmap.png" width="70%"><br>
+  <em><b>Fig. 1.1</b> — Held-out MSE for four architectures and four activations (M = 128 regularly
+  spaced points). Under a fixed neuron budget <b>depth matters more than width</b>: the 6x128
+  network is the best architecture for every activation, while the single 1024-unit layer
+  reaches 69–98% of the signal variance. The best configuration, 6x128 with sin, reproduces the
+  function to within about 5% of its variance. Deep sigmoid networks (10x64) do not train at all.</em>
+</p>
+
+<p align="center">
+  <img src="assets/ca1-task1-activations.png" width="90%"><br>
+  <em><b>Fig. 1.2</b> — The 3x128 network with each activation, zoomed on the first 128 positions.
+  ReLU, tanh and sigmoid capture the slow variations but miss most of the fast oscillations, and
+  do not even pass through all the training points: the difficulty is fitting high frequencies at
+  all (spectral bias), not the shape of the interpolation between points. sin reproduces
+  noticeably more of the oscillations.</em>
+</p>
+
+<p align="center">
+  <img src="assets/ca1-task1-dataset-size.png" width="60%"><br>
+  <em><b>Fig. 1.3</b> — Held-out MSE against the number of training points (3x128 network). With
+  regular sampling and sin, the largest drop is between M = 64 and M = 128 (0.57 to 0.21), which
+  brackets the Nyquist rate of about 2 × 49 = 98 samples; the transition is gradual rather than
+  sharp because this network underfits. Irregular sampling is worse at every M, especially with
+  few points.</em>
+</p>
+
+<p align="center">
+  <img src="assets/ca1-task1-regular-vs-irregular.png" width="100%"><br>
+  <em><b>Fig. 1.4</b> — Regular versus irregular training points with the sin activation. With
+  regular points the reconstruction follows the target; with irregular points the periodic
+  activation invents large oscillations inside the gaps, with amplitudes of 3 to 4 against a
+  target that stays within about ±2.</em>
 </p>
 
 ### Task 2 — interpolating the whole class of band-limited functions (1,000,000-neuron budget)
 
-Now the network maps a 100-dimensional vector (the function sampled on an index set 𝒳) to the
-full 512-dimensional signal. Each training example is a *different* random band-limited function,
-so the model must learn the reconstruction operator itself, not one particular signal.
+Now the network maps a 100-dimensional vector (one function sampled on a fixed index set 𝒳) to the
+full 512-dimensional signal. Each training example is a *different* random function, and the model
+is evaluated on 1,000 functions it has never seen, so it must learn the reconstruction operator
+itself rather than any particular signal.
+
+As a reference, when the band limit is known the problem is a linear least-squares fit of 98
+coefficients to 100 samples. This classical method is exact with regular sampling (test MSE
+1e-15), degrades with random sampling (4.8e-4) and breaks down with exponentially spaced samples
+(2e7), because the least-squares problem becomes badly ill-conditioned.
 
 <p align="center">
-  <img src="assets/ca1-task2-mean-collapse.png" width="49%">
-  <img src="assets/ca1-task2-tanh.png" width="49%"><br>
-  <em><b>Fig. 1.3 / 1.4</b> — Left (ReLU, M = 512, 𝒳 drawn uniformly at random): the network
-  collapses onto the conditional mean, outputting a near-zero constant. Right (tanh, M = 1024):
-  the output finally has the right amplitude envelope and phase alignment in places, but tracks
-  the target only loosely.</em>
+  <img src="assets/ca1-task2-baseline.png" width="90%"><br>
+  <em><b>Fig. 1.5</b> — Baseline (regular 𝒳, M = 2,000 training functions, 3x512 ReLU) on three
+  unseen test functions. The test MSE is 0.049, about 5% of the signal variance: the network has
+  learned a general reconstruction operator, with small errors mainly at the peaks.</em>
 </p>
 
-**Why the collapse happens.** With 50 free complex coefficients, a 100-sample observation is at
-the information-theoretic boundary for exact recovery — and only when the samples are placed
-suitably. Fitting a 100 → 512 operator from M = 512 examples of that operator is a badly
-underdetermined regression, and under MSE the optimal response to insufficient signal is exactly
-what Fig. 1.3 shows: predict the mean. The L2 regulariser (λ = 0.01) on the first layer actively
-pushes toward this solution.
+<p align="center">
+  <img src="assets/ca1-task2-heatmap.png" width="80%"><br>
+  <em><b>Fig. 1.6</b> — Test MSE for three architectures and five activations (regular 𝒳,
+  M = 2,000). Because recovering a band-limited function from its samples is a linear operation,
+  the <b>network without any nonlinearity is the best</b>: the 2x256 linear network reaches
+  1.4e-13, matching the classical method. Among nonlinear activations sin is best and ReLU worst,
+  and for every activation the smallest network is the best. 4x1024 with sigmoid fails to train.</em>
+</p>
 
-### Ablations recorded in the notebook
+<p align="center">
+  <img src="assets/ca1-task2-dataset-size.png" width="49%">
+  <img src="assets/ca1-task2-position-error.png" width="49%"><br>
+  <em><b>Fig. 1.7 / 1.8</b> — Left: test MSE against the number of training functions (3x512
+  ReLU). With regular sampling the error falls from 0.43 to 0.011 as M grows from 125 to 4,000,
+  roughly in proportion to 1/M. Irregular (0.68 to 0.24) and exponential (0.89 to 0.56) sampling
+  improve much more slowly. Right: error at each position for M = 2,000. Regular sampling is
+  uniformly low; with exponential sampling the error beyond position 100 swings between low values
+  at the samples and about 1 inside the gaps, where the network has no information and falls back
+  to the mean.</em>
+</p>
 
-| Cell | Activation | M | Final train MSE | Behaviour |
-|------|-----------|---|-----------------|-----------|
-| 1 | ReLU | 512 | 0.195 | Mean collapse |
-| 2 | ReLU | 512 | 0.037 | Mean collapse |
-| 4 | ReLU | 512 | 0.0041 | Best MSE, still qualitatively flat |
-| 5 | ReLU | 512 | 0.0118 | Oscillatory, over-amplified |
-| 6 | ReLU | 1024 | 0.0112 | Larger M does not fix it |
-| 7 | tanh | 1024 | 0.0135 | Best *qualitative* fit |
+### Findings
 
-The headline finding is that **MSE ranks these models in almost the opposite order to visual
-fidelity**. The lowest-loss ReLU run (0.0041) produces a flat line; the tanh run with 3× the loss
-produces the only reconstruction with plausible structure. Choosing a loss that matches the task
-matters more here than choosing an architecture.
+- **Task 1.** A DNN can memorise and interpolate one band-limited function, but only with a
+  suitable architecture: the deeper sin network reaches about 5% relative error, while a single
+  wide layer or a deep sigmoid network learns little more than the mean. Depth helps more than width
+  under a fixed neuron budget, and the main obstacle is fitting high frequencies at all. More
+  training points help most around the Nyquist rate, and regular sampling consistently beats
+  irregular sampling.
+- **Task 2.** A DNN learns to reconstruct unseen functions from 100 samples, and with regular
+  sampling its error decreases roughly as 1/M. Since reconstruction is linear, a network with no
+  nonlinearity learns it essentially exactly, and every nonlinear network is worse by many orders
+  of magnitude. The choice of 𝒳 matters more than any other factor tested: irregular and
+  exponential sampling leave gaps whose content cannot be inferred. The DNN avoids the numerical
+  breakdown of the classical method under exponential sampling, but it does not recover what is
+  missing in the gaps.
 
 ---
 
 ## CA2 — Reliability: Dropout, Sparsification, and Ensembles
 
-> *Spec: [`CA2/PDL_challenge_2.pdf`](CA2/PDL_challenge_2.pdf) · Code: [`CA2/Challenge2new.ipynb`](CA2/Challenge2new.ipynb) (Colab), [`CA2/Challenge2.ipynb`](CA2/Challenge2.ipynb)*
+> *Spec: [`CA2/PDL_challenge_2.pdf`](CA2/PDL_challenge_2.pdf) · Code: [`CA2/Challenge2.ipynb`](CA2/Challenge2.ipynb) (Colab)*
 
 ### Problem setting
 
-A network's softmax output is routinely read as a confidence. It usually is not one — DNNs are
-systematically overconfident. The challenge formalises *reliability* as a KL divergence between
-two 10 × 10 matrices:
+A network's softmax output is routinely read as a confidence, and DNNs are known to be overconfident.
+The challenge measures *reliability* as a KL divergence between two 10 × 10 matrices, both computed on
+the test set:
 
-- **P(j|i)** — the empirical distribution of predictions: given true class `i`, how often the model
-  actually says `j`.
-- **Q(j|i)** — the model's own claim: the average softmax vector over inputs of true class `i`.
+- **P(j|i)**: the empirical distribution of predictions. Given true class `i`, how often the argmax
+  is `j`.
+- **Q(j|i)**: the model's own claim. The average softmax vector over inputs of true class `i`.
 
-D<sub>KL</sub>(P ‖ Q) = Σᵢ P(i) Σⱼ P(j|i) log[P(j|i) / Q(j|i)]
-
-A well-calibrated model has these two matrices agree, and the divergence goes to zero.
+The conditional KL is D<sub>KL</sub> = Σᵢ P(i) Σⱼ P(j|i) log[P(j|i) / Q(j|i)]. Lower is meant to
+mean more reliable.
 
 ### Method
 
-VGG-16 (ImageNet weights, `include_top=False`, `pooling='avg'`) with the convolutional base
-**frozen** and three trainable dense layers appended (512 → 256 → 10). Only the head is trained —
-this keeps feature extraction fixed so that every reliability difference is attributable to the
-dense layers. An exponential LR schedule (γ = 0.95) runs on top of Adam.
+**Baseline.** The model is VGG-16 (ImageNet weights, `include_top=False`, `pooling='avg'`). The
+convolutional base is **frozen**, and a trainable 512 → 256 → 10 dense head is appended on top.
+Because the base never changes and there is no augmentation, the 512-d features are computed once and
+the heads are trained on this cache. A check cell confirms that this matches the full model, with a
+maximum difference of 5e-6. The head is trained with Adam (lr 1e-4) on 45k images; 5k are held out
+for validation.
 
-Two ensembling strategies are then compared against this baseline:
+**Ensembles.** Each ensemble has five members, and each member starts from the baseline weights.
+Every member gets its own fixed random mask that keeps 20% of the head, is retrained for 10 epochs,
+and at inference the members' softmax outputs are averaged.
 
-- **Task 1 — dropout-induced random edges.** Five copies of the head, each with dropout
-  (`rate = 0.8`) between dense layers, retrained independently and averaged at inference.
-- **Task 2 — sparsification.** Connections are pruned rather than randomly masked, keeping ~20% of
-  the dense connections per member.
+- **Task 1: node removal.** 80% of the nodes in the two hidden layers are removed. This is equivalent
+  to one dropout mask, frozen for the member's lifetime.
+- **Task 2: edge removal.** 80% of the weights in all three dense layers are removed (random
+  sparsification).
 
-Three calibration levers are implemented on top: adding the KL term to the loss, temperature
-scaling (logits ÷ T before softmax), and L1/L2 regularisation.
+**Reliability levers.** Each lever is applied to both ensembles:
+
+- temperature scaling, with T chosen on the validation set;
+- the conditional KL added to the loss, computed per mini-batch with λ = 1;
+- L2 regularisation of 1e-4;
+- bagging, i.e. bootstrap training sets;
+- an extra sigmoid "confidence" output trained to predict correctness. At inference it mixes the
+  softmax with the uniform distribution.
+
+The conditional KL is reported alongside the mean confidence and the NLL.
 
 ### Results
 
+| Model | Test acc | Cond. KL | Mean conf | NLL | Active weights |
+|---|---|---|---|---|---|
+| Baseline (1 model) | 0.628 | **0.0025** | 0.851 | 1.721 | 396,554 |
+| Task 1 ensemble (nodes) | 0.688 | 0.0230 | 0.723 | 0.953 | 5 × 58,099 |
+| Task 2 ensemble (edges) | 0.691 | 0.0196 | 0.738 | 0.950 | 5 × 79,933 |
+| Task 1 + Task 2 combined (10 members) | **0.701** | 0.0259 | 0.722 | **0.903** | — |
+| Task 1 + KL in the loss | 0.684 | 0.0177 | 0.741 | 0.980 | 5 × 58,099 |
+| Task 2 + KL in the loss | 0.692 | 0.0153 | 0.759 | 0.977 | 5 × 79,933 |
+| Task 2 + temperature (T = 0.5) | 0.689 | 0.0081 | 0.799 | 1.255 | 5 × 79,933 |
+| Task 2 + bagging | 0.685 | 0.0177 | 0.739 | 1.045 | 5 × 79,933 |
+| Task 2 + confidence branch | 0.690 | 0.0574 | 0.659 | 0.956 | 5 × 79,933 |
+
+L2 at 1e-4 changed nothing measurable in either task. The full table, with the Task 1 versions of
+every lever, is in the notebook.
+
 <p align="center">
-  <img src="assets/ca2-accuracy.png" width="70%"><br>
-  <em><b>Fig. 2.1</b> — Baseline head training. Training accuracy rises monotonically to 82.6%
-  while validation stalls at ~78.5% from epoch 6 onward. The frozen ImageNet base is the binding
-  constraint: 32×32 CIFAR images are far outside the resolution regime VGG-16 was pre-trained on,
-  which caps the achievable accuracy near the spec's 70% target.</em>
+  <img src="assets/ca2-baseline-curve.png" width="85%"><br>
+  <em><b>Fig. 2.1</b> — Baseline head, evaluated on the test set every 25 steps. At initialisation the
+  head reports 0.88 mean confidence at 10% accuracy. Accuracy then plateaus near 0.63, while confidence
+  climbs back to 0.85. Meanwhile train accuracy reaches 99.4%. The conditional KL (right) rises and then
+  <b>falls</b> during this over-fitting phase: it does not track the overconfidence.</em>
 </p>
 
 <p align="center">
-  <img src="assets/ca2-confusion-matrix.png" width="62%">
-  <img src="assets/ca2-kl-divergence.png" width="36%"><br>
-  <em><b>Fig. 2.2 / 2.3</b> — Left: the confusion matrix reproduces the CA0 finding from a
-  completely different architecture. The dominant off-diagonal cells are cat↔dog (147 and 144) and
-  the vehicle pair automobile↔truck (86); classes 0/1/8 (plane, car, ship) exceed 860 correct.
-  Errors are structured, not diffuse. Right: the divergence spectrum, which is long-tailed —
-  most predictions are well matched and a sparse subset carries nearly all the miscalibration.</em>
+  <img src="assets/ca2-baseline-pq.png" width="95%"><br>
+  <em><b>Fig. 2.2</b> — P and Q for the baseline. They agree almost cell for cell, so every per-class KL is
+  below 0.005. Cat is the hardest class (36% correct, 24% called dog), yet it has one of the lowest KLs.</em>
 </p>
 
-> **Implementation note.** In the notebook, `scipy.stats.entropy(predicted_softmax.T, true_softmax.T)`
-> is evaluated over the 10,000 test samples, so Fig. 2.3 is a *per-sample* divergence, not the
-> per-class conditional KL of the spec; and `softmax()` is applied to already-one-hot labels, which
-> is not the label distribution the definition calls for. The figure is still informative about the
-> shape of the miscalibration, but it is not the scalar D<sub>KL</sub> the spec defines. The
-> dropout-ensemble cells (14–17) are written but their outputs were not saved, so no ensemble
-> accuracy is recorded in the notebook.
+<p align="center">
+  <img src="assets/ca2-task1-ensemble.png" width="95%"><br>
+  <em><b>Fig. 2.3</b> — Task 1 ensemble during retraining. Epoch 0 is just after masking, when accuracy
+  has collapsed to 18%. The individual members over-fit: their test accuracy peaks at epoch 3–4. The
+  averaged ensemble stays flat at about 0.69, and its confidence tracks its accuracy closely.</em>
+</p>
+
+<p align="center">
+  <img src="assets/ca2-temperature-scan.png" width="80%"><br>
+  <em><b>Fig. 2.4</b> — Temperature scan on the validation set. The conditional KL increases
+  monotonically with T, so minimising it picks the sharpest temperature on the grid (0.5). The NLL is
+  minimised near T ≈ 1.4, the usual "soften an overconfident model" result.</em>
+</p>
+
+<p align="center">
+  <img src="assets/ca2-summary.png" width="90%"><br>
+  <em><b>Fig. 2.5</b> — All models: test accuracy and conditional KL.</em>
+</p>
+
+### Findings
+
+1. **Ensembles fix both accuracy and overconfidence.**
+   - Five members, each keeping only 20% of the nodes or edges, gain about 6 points of accuracy over the
+     baseline. They use 73% (nodes) and 101% (edges) of the baseline's active weights.
+   - Over-fitting drops: the train/test gap is 0.20–0.23, against 0.36 for the baseline.
+   - Overconfidence nearly disappears: mean confidence minus accuracy falls from +0.22 to +0.03 / +0.05,
+     and the NLL almost halves.
+2. **Edge removal gives stronger members than node removal.** Task 2 members average 0.651 against 0.641
+   for Task 1, because no hidden layer is squeezed to 102/51 units. After averaging, the two ensembles
+   are practically equal.
+3. **The spec's conditional KL rewards sharp outputs, not calibrated ones.**
+   - If every softmax is one-hot, Q = P exactly and the KL is zero, whatever the accuracy.
+   - That is why the over-fitted baseline has the lowest KL of all models, why averaging members raises it,
+     and why minimising it over T always sharpens the outputs.
+   - The KL is only meaningful next to an accuracy- or likelihood-based measure. Here those measures point
+     the other way.
+4. **Of the levers, adding the KL to the loss is the most useful.** It cuts the KL by about 22% in both
+   tasks at a cost of at most 0.4 points of accuracy. Bagging lowers the KL but costs accuracy and NLL.
+   L2 at 1e-4 is inert. The confidence branch over-corrects into underconfidence (0.66 confidence at
+   0.69 accuracy).
+
+### Caveats
+
+- **The spec's 70% target was not reached.** Frozen ImageNet features on 32×32 inputs cap the head
+  near 63% validation accuracy, so the baseline trained for its full 30 epochs and is heavily
+  over-fitted when the ensembles start from it.
+- **The spec uses `weights=None`.** With a frozen, randomly initialised base, 70% is out of reach
+  altogether, so ImageNet weights are used instead.
+- **The temperature was chosen to minimise the conditional KL**, which is why T = 0.5 is reported.
+  The notebook can instead choose it by NLL (`TEMPERATURE_CRITERION = 'nll'`); that version has not
+  been run.
+- **Single run.** Each configuration was trained once with one seed and one value of λ, and the
+  run-to-run variance was not measured. The smaller differences (under about 0.5 points of accuracy)
+  should not be read as meaningful.
 
 ---
 
 ## CA3 — NLP with CNN, RNN, and GRU
 
-> *Spec: [`CA3/PDL_challenge_3.pdf`](CA3/PDL_challenge_3.pdf) · Code: [`CA3/Challenge3.ipynb`](CA3/Challenge3.ipynb), [`CA3/Challenge3-3.ipynb`](CA3/Challenge3-3.ipynb)*
+> *Spec: [`CA3/PDL_challenge_3.pdf`](CA3/PDL_challenge_3.pdf) · Code: [`CA3/Challenge3.ipynb`](CA3/Challenge3.ipynb) (Colab, T4 GPU)*
 
 ### Problem setting
 
 Binary sentiment classification on the Large Movie Review Dataset (IMDB, 25k train / 25k test),
-vocabulary capped at the 5,000 most frequent tokens. The real subject is not the accuracy number —
-it is how **sequence length and padding strategy** interact with each architecture's inductive bias.
-
-All architectures are held to the same budget of **K ≈ 10,000 neurons**, so any performance
-difference is attributable to architecture rather than capacity.
+with the vocabulary capped at the 5,000 most frequent tokens and every review padded or truncated
+to 500 tokens. The question is less about the accuracy number than about how **sequence length,
+word order and padding** interact with each architecture.
 
 ### Method
 
-<p align="center">
-  <img src="assets/ca3-review-length-distribution.png" width="62%"><br>
-  <em><b>Fig. 3.1</b> — Review-length distribution, which drives every design decision downstream.
-  The mode sits near 130 tokens with a long right tail, and the spike at 500 is the truncation
-  artefact: every review longer than <code>max_length</code> is clipped to that ceiling. The
-  short/long split threshold was set at <b>222 tokens</b> in <code>Challenge3-3</code> — chosen
-  from this histogram rather than the spec's placeholder value of 100.</em>
-</p>
+The training set is split at 100 tokens into a short subset (2,822 reviews) and a long subset
+(22,178 reviews). CNN, SimpleRNN, GRU and LSTM models are each trained on both subsets and
+evaluated on the full test set, which is 88% long reviews.
 
-The dataset is then split into short (≤ 222 tokens) and long (> 222) subsets, and each of CNN /
-SimpleRNN / GRU is trained on both, under both `padding='post'` and `padding='pre'`.
+All models share a 32-dimensional embedding and are held to the same budget of **K ≈ 10,000
+trainable parameters outside the embedding** (CNN 8,801, RNN 9,121, GRU 8,921, LSTM 9,147). The
+embedding is identical in every model, so this keeps capacity comparable and attributes any
+difference to the architecture. The recurrent models use `mask_zero=True`, so they skip the
+padding and classify from the hidden state after the last real word. Training uses Adam with
+EarlyStopping (patience 2) on a 20% validation split.
+
+On top of accuracy, the notebook measures:
+- **Accuracy by review length**, bucketed by the original, unpadded length.
+- **Order sensitivity**, by permuting the words of each test review at inference time.
+- **Gradient flow**, as the norm of the loss gradient with respect to each input token, against
+  its distance from the last token.
+- **Padding strategies**, on an unmasked GRU trained on short reviews: pre, post and centered
+  zero padding, and post padding with 0, 1 or random 0/1 values.
 
 ### Results
 
 <p align="center">
-  <img src="assets/ca3-rnn-loss.png" width="55%"><br>
-  <em><b>Fig. 3.2</b> — RNN loss on the short vs long subsets. Both descend smoothly over three
-  epochs with no divergence — the vanishing-gradient pathology the spec warns about does not
-  appear, because post-padding keeps the informative tokens adjacent to the output layer.</em>
+  <img src="assets/ca3-architecture-comparison.png" width="100%"><br>
+  <em><b>Fig. 3.1</b> — Test accuracy (left) and training time per epoch (right). Every model
+  trained on long reviews beats its short-review counterpart. GRU is the most accurate on both
+  subsets. SimpleRNN is both the least accurate and the slowest, since it has no cuDNN kernel.</em>
 </p>
+
+| Architecture | Params | Acc. (trained on short) | Acc. (trained on long) | Test loss (long) | s/epoch (long) |
+|--------------|--------|-------------------------|------------------------|------------------|----------------|
+| CNN  | 8,801 | 77.7% | 86.0% | 0.331 | 3.6 |
+| RNN  | 9,121 | **51.9%** | 84.5% | 0.379 | 7.1 |
+| GRU  | 8,921 | 77.8% | **87.1%** | 0.328 | 4.1 |
+| LSTM | 9,147 | 73.7% | 86.7% | **0.317** | 4.0 |
+
+All models reach the spec's 70% target except the RNN trained on short reviews. Its train loss
+falls to 0.46 while its val loss stays at 0.69: it memorizes the 2,257 training reviews without
+generalizing. For reference, a much larger baseline CNN (610k parameters, full training set)
+reaches only 85.8% and overfits from the first epoch, so 70x more capacity buys nothing.
 
 <p align="center">
-  <img src="assets/ca3-padding-comparison.png" width="100%"><br>
-  <em><b>Fig. 3.3</b> — The central result. Post- vs pre-padding across all three architectures.
-  <b>Loss (left) separates sharply; accuracy (right) does not.</b> The recurrent models lose
-  ~0.08–0.09 nats when switched to pre-padding (GRU 0.379 → 0.460, RNN 0.368 → 0.461) while the
-  CNN barely moves (0.510 → 0.522). Accuracy shifts by well under one point in every case.</em>
+  <img src="assets/ca3-accuracy-by-length.png" width="70%"><br>
+  <em><b>Fig. 3.2</b> — Accuracy by original review length. The models trained on long reviews
+  are nearly flat (GRU 87.8% on 0-100 tokens, 85.0% on 500+). The GRU trained on short reviews
+  degrades steadily from 81.4% to 73.4% as inputs move away from its training distribution. It
+  is worse than GRU long even on the 0-100 bucket it was trained on, so data volume matters more
+  than matching the length distribution.</em>
 </p>
 
-| Architecture | Post-pad loss | Pre-pad loss | Post-pad acc. | Pre-pad acc. |
-|--------------|---------------|--------------|---------------|--------------|
-| CNN | 0.5098 | 0.5217 | 88.46% | 88.56% |
-| GRU | 0.3786 | 0.4603 | 89.04% | 89.11% |
-| RNN | 0.3678 | 0.4606 | 89.29% | 89.06% |
+| Permutation at inference | RNN long | GRU short | GRU long |
+|--------------------------|----------|-----------|----------|
+| Original            | 84.5% | 77.8% | 87.1% |
+| Shuffle within 10   | 84.1% | 77.7% | 87.0% |
+| Shuffle first half  | 84.1% | 77.8% | 87.1% |
+| Shuffle second half | 83.8% | 75.1% | 86.4% |
+| Full shuffle        | 83.3% | 73.8% | 86.2% |
+| Reverse             | 82.0% | 71.3% | 84.9% |
+
+Shuffling words locally costs almost nothing, and even a full shuffle costs only 1-4 points:
+sentiment in IMDB is carried mostly by individual words. This is why the CNN keeps up with the
+recurrent models. What order sensitivity there is sits at the **end** of the review. Shuffling the
+second half hurts more than shuffling the first, and reversing, which moves the ending furthest
+from the output, hurts the most.
+
+<p align="center">
+  <img src="assets/ca3-gradient-flow.png" width="70%"><br>
+  <em><b>Fig. 3.3</b> — Mean input-gradient norm against distance from the last token, on long
+  test reviews. Both models weight recent tokens most. The GRU's curve decays about an order of
+  magnitude more than the RNN's over 400 steps. The sharp drops are an averaging artefact: at
+  large distances only the longest reviews contribute.</em>
+</p>
+
+The gradient measure says how much the prediction depends on each token. It falls both when
+gradients vanish and when a model has *learned* to discount distant tokens. So Fig. 3.3 does not
+show the GRU remembering further back than the RNN. Together with the permutation results, its
+advantage looks like better use of recent context.
+
+<p align="center">
+  <img src="assets/ca3-padding-position.png" width="100%"><br>
+  <em><b>Fig. 3.4</b> — Padding position for an unmasked GRU trained on short reviews, each
+  padded to 500 tokens. Only pre-padding learns (78.3%). Post- and centered padding stay at 54.05%,
+  predicting the same class for every review, and stop after 3 epochs. Time per epoch is
+  unaffected.</em>
+</p>
 
 ### Interpretation
 
-The asymmetry is exactly what the architectures predict. A `Conv1D` + `GlobalMaxPooling1D` stack is
-**permutation-insensitive to where the padding sits** — max-pooling discards zero activations
-regardless of position, so the CNN is nearly indifferent. Recurrent models are not: with
-pre-padding, the network consumes hundreds of zero steps before seeing any content, and its hidden
-state has decayed by the time real tokens arrive.
+The padding result is the **opposite of what the spec suggests** (section 3.3 argues post-padding
+is better for recurrent models). A model that classifies from its final hidden state needs the
+content close to the output. With post-padding, at least 400 steps of padding separate a short
+review's last word from the output. The signal does not survive them, and the model never gets
+off the ground. Centered padding still leaves at least 200 steps and fails the same way. Masking
+removes the problem entirely: the masked models above use post-padding with no difficulty.
 
-The more interesting observation is that **accuracy hides this entirely.** All six configurations
-land within 0.8 points of each other. Only the loss — which is sensitive to the *confidence* of
-predictions, not just their argmax — reveals that pre-padded recurrent models are meaningfully
-worse-calibrated. This is the same accuracy-vs-reliability distinction CA2 makes explicitly,
-arrived at here by accident.
+The padding-value experiment (0, 1 or random 0/1, all with post-padding) is **inconclusive**. All
+three runs fail exactly like post-padding above, so the value never gets a chance to matter.
+Isolating it would require rerunning with pre-padding. Note also that 1 is the `<START>` token in
+this vocabulary, so "one-padding" appends a run of `<START>` tokens.
 
-> **Status.** Cells 15/16 and 19–23 of `Challenge3.ipynb` are planned experiments — per-length-bucket
-> accuracy, a token-shuffling test for order sensitivity, and centre-padding / non-zero padding
-> ablations — that are stubbed as comments and not implemented.
+> **Status.** Two parts of the spec are not covered: the RNN trained on short reviews stays below
+> the 70% target, and the padding-value comparison needs a rerun with pre-padding. The
+> word-frequency and vocabulary analysis for the CNN is not implemented. All results come from a
+> single seed, so differences under about one point should not be over-interpreted.
 
 ---
 
 ## CA4 — Word Embeddings with BERT
 
-> *Spec: [`CA4/PDL_challenge_4.pdf`](CA4/PDL_challenge_4.pdf) · Code: [`CA4/Challenge4-2.ipynb`](CA4/Challenge4-2.ipynb) (PyTorch), [`CA4/Challenge4_34.ipynb`](CA4/Challenge4_34.ipynb), [`CA4/Challenge4_567.ipynb`](CA4/Challenge4_567.ipynb) (TF Hub)*
+> *Spec: [`CA4/PDL_challenge_4.pdf`](CA4/PDL_challenge_4.pdf) · Code: [`CA4/Challenge4.ipynb`](CA4/Challenge4.ipynb) (Colab, T4 GPU)*
 
 ### Problem setting
 
-CA3's recurrent models process tokens sequentially and inherit all of the resulting long-range
-problems. BERT replaces recurrence with multi-head self-attention, so every token attends to every
-other in one parallel step. This challenge fine-tunes it on the same IMDB task and inspects the
-representations it produces.
+CA3's recurrent models read a review one token at a time. BERT replaces recurrence with
+multi-head self-attention, so every token attends to every other token in one parallel step.
+This challenge fine-tunes BERT on the same IMDB sentiment task. It then asks what the embeddings
+look like before and after fine-tuning, and whether clustering them reveals structure beyond
+positive versus negative.
 
-### Three implementations
+### Method
 
-**1. PyTorch + HuggingFace** (`Challenge4-2.ipynb`) — the full pipeline. A custom
-`IMDB_Dataset` reconstructs review text from Keras' integer sequences (offsetting by 3 for the
-`<PAD>` / `<START>` / `<UNK>` reserved indices), re-tokenises with `BertTokenizer`, and caps
-sequences at 300 tokens. `create_mini_batch` pads to the longest sequence *per batch* rather than
-to a global maximum — meaningfully cheaper than CA3's fixed 500-token padding — and builds the
-attention masks. `BertForSequenceClassification` (`bert-base-uncased`, 2 labels) is fine-tuned
-end-to-end with Adam at `lr = 1e-5` for 6 epochs.
+Everything is in one PyTorch + HuggingFace notebook built on `bert-base-uncased`. The data is the
+official IMDB split: 25k train / 25k test, both balanced. 2,500 training reviews are held out for
+validation, and `<br />` tags are stripped.
 
-**2. Embedding analysis** (`Challenge4_34.ipynb`) — loads the raw `BertModel` and projects the
-last hidden layer of a single review to 2-D.
-
-**3. TensorFlow Hub** (`Challenge4_567.ipynb`) — `small_bert/bert_en_uncased_L-4_H-512_A-8` with
-the official preprocessing layer, AdamW with 10% warmup, and downstream clustering of the pooled
-embeddings.
+- **Pre-trained embeddings.** For 2,000 training reviews, the last hidden layer of the untouched
+  model is reduced to one 768-d vector per review, using both the `[CLS]` token and mean pooling.
+  Each is projected to 2-D with PCA and t-SNE.
+- **Fine-tuning.** A 64-d bottleneck sits between BERT and the classifier:
+  `pooled output (768) -> Linear(768, 64) -> tanh -> Linear(64, 2)`. The whole network is trained
+  end to end for 2 epochs. Training uses AdamW (`lr = 2e-5`) with 10% linear warmup, batch size
+  32, `max_len = 256` and mixed precision. Each epoch takes about 5 minutes on a T4. The spec's
+  own example is written in TensorFlow; the bottleneck is added because section 7 of the spec asks
+  for clustering on 64-d embeddings.
+- **Evaluation.** The test set is used once. From that pass the notebook reports accuracy,
+  precision, recall and F1, the most positive and most negative reviews, and the most confident
+  mistakes.
+- **Clustering.** K-means runs on the standardized 64-d test embeddings for k = 2 to 10, and k is
+  chosen with the elbow method and the silhouette score. Each cluster is then described by its
+  label mix, its distinctive TF-IDF words, and how often it mentions ten theme word lists (visual,
+  story, acting, music, emotion, horror, boredom, ...) compared with the whole test set.
 
 ### Results
 
 <p align="center">
-  <img src="assets/ca4-bert-token-tsne.png" width="48%">
-  <img src="assets/ca4-bert-pca-tsne.png" width="50%"><br>
-  <em><b>Fig. 4.1 / 4.2</b> — Left: t-SNE of the token embeddings within one review. The structure
-  is real — one dense central mass plus two well-separated satellite clusters — and it is
-  <b>contextual</b>: identical wordpieces land in different places depending on surrounding text,
-  which is precisely what a static embedding like word2vec cannot do. Right: PCA (linear) vs t-SNE
-  (non-linear) on pooled review embeddings. PCA already achieves visible class separation along
-  its first component, meaning the sentiment signal survives in a linear subspace of the pooled
-  output — which is exactly why a single dense layer on top of <code>pooled_output</code> is
-  sufficient for the classification head. t-SNE separates the regions more cleanly but, as always,
-  its inter-cluster distances carry no metric meaning.</em>
+  <img src="assets/ca4-pretrained-embeddings.png" width="85%"><br>
+  <em><b>Fig. 4.1</b> — Pre-trained (not fine-tuned) BERT review embeddings. Top: <code>[CLS]</code>;
+  bottom: mean pooling; left: PCA; right: t-SNE. In PCA the two classes overlap completely.
+  t-SNE on mean-pooled vectors shows only a weak left/right tendency. Without fine-tuning,
+  sentiment is not a dominant direction of the embedding: BERT encodes what a review is about
+  more than how the reviewer felt.</em>
+</p>
+
+| Epoch | Train loss | Train acc. | Val acc. |
+|-------|------------|------------|----------|
+| 1 | 0.326 | 85.7% | 91.7% |
+| 2 | 0.160 | 94.5% | 91.9% |
+
+Almost all of the gain comes in the first epoch. The widening train/validation gap in epoch 2
+means more epochs would start to overfit.
+
+| Test set (25,000 reviews) | Accuracy | Precision | Recall | F1 |
+|---------------------------|----------|-----------|--------|----|
+| Fine-tuned `bert-base-uncased` | **92.15%** | 0.910 | 0.935 | 0.923 |
+
+This is 5 points above the best CA3 model (GRU, 87.1%), and it still truncates 41% of reviews at
+256 tokens.
+
+<p align="center">
+  <img src="assets/ca4-test-performance.png" width="95%"><br>
+  <em><b>Fig. 4.2</b> — Left: confusion matrix. The model makes more false positives (1,150)
+  than false negatives (812). Right: distribution of predicted P(positive), log scale. Almost all
+  reviews sit in the two extreme bins. The <code>tanh</code> bottleneck saturates, so scores cap at
+  about 0.989 / 0.011, and the "top 5" most positive and most negative reviews are in fact tied.</em>
+</p>
+
+The most extreme reviews on both sides are unambiguous ("the acting is superb, I recommend it" /
+"a disappointing mess, don't waste a second"), so at the extremes the model agrees with a human
+reader. The most confident mistakes fall into three groups:
+
+1. **Sarcasm.** Examples are "one of the all time greatest horror movies" about a Charles Band
+   film, and "Master P's acting skills make you actually believe he is Italian". The words are
+   positive and the intent is negative.
+2. **"So bad it's good".** "Crassly pandering hunk of blithely rancid ... junk" is labelled
+   positive: the reviewer enjoys the film because it is trashy.
+3. **Labels that contradict the text.** "Absolute and utter filth" is labelled positive. These look
+   like label noise.
+
+Groups 1 and 2 both push negative reviews toward a positive prediction, which is consistent with
+the excess of false positives.
+
+<p align="center">
+  <img src="assets/ca4-kmeans-selection.png" width="85%"><br>
+  <em><b>Fig. 4.3</b> — K-means on the fine-tuned 64-d embeddings. The silhouette score (right) is
+  highest at k = 2 (0.822) and falls steadily. The inertia curve (left) has a sharp elbow at
+  k = 3, where inertia drops from 156k to 58k. k = 3 keeps a high silhouette (0.793) and was used
+  for interpretation.</em>
 </p>
 
 <p align="center">
-  <img src="assets/ca4-bert-kmeans.png" width="80%"><br>
-  <em><b>Fig. 4.3</b> — K-means model selection on the BERT embeddings. Inertia (left) decreases
-  smoothly with no elbow; the silhouette score (right) is <b>maximised at k = 2</b> and decays
-  monotonically. The unsupervised optimum recovers the binary sentiment structure without ever
-  seeing a label. The absolute silhouette value (~0.10) is low, which is the expected signature of
-  a high-dimensional embedding space where clusters are genuine but not compactly separated.</em>
+  <img src="assets/ca4-clusters.png" width="85%"><br>
+  <em><b>Fig. 4.4</b> — PCA and t-SNE of 4,000 test embeddings, coloured by cluster (top) and by
+  true label (bottom). After fine-tuning the space is essentially one-dimensional. PCA shows an
+  arc from the negative pole to the positive pole, and cluster 2 is the bridge between them.
+  Compare Fig. 4.1: fine-tuning is what creates the separation.</em>
 </p>
 
----
-
-## Standalone generative models
-
-### GAN — [`GAN/GAN.py`](GAN/GAN.py)
-
-A from-scratch vanilla GAN in PyTorch on the 8×8 `sklearn` digits set (1,797 samples, 64-D).
-Generator: 100-D noise → 128 → 256 → 512 → 64 with BatchNorm and a sigmoid output.
-Discriminator: 64 → 512 → 256 → 128 → 1 with LeakyReLU(0.2) and dropout 0.3.
-Both use Adam(lr = 2e-4, β₁ = 0.5) — the standard DCGAN setting. The generator is updated once per
-two discriminator steps to keep the discriminator from overpowering it.
+| Cluster | Size | % positive | Mean P(pos) | Mean words | Distinctive words | Label |
+|---------|------|------------|-------------|------------|-------------------|-------|
+| 0 | 10,891 | 96.1% | 0.983 | 215 | great, love, excellent, wonderful, beautiful, music, favorite | Enthusiastic, emotionally engaged |
+| 1 | 11,287 | 4.3% | 0.021 | 220 | bad, worst, awful, waste, boring, stupid, minutes, money | Dismissive, bored |
+| 2 | 2,822 | 55.0% | 0.631 | 296 | man, wife, police, dead, doctor, car, pretty, course | Ambivalent, retells the plot |
 
 <p align="center">
-  <img src="assets/gan-digits-real-vs-generated.png" width="100%"><br>
-  <em><b>Fig. G.1</b> — Rendered from the trained checkpoint. Top two rows: real digits. Bottom two
-  rows: 16 samples from 16 independent noise vectors. This is a textbook <b>mode collapse</b>:
-  every sample is a variation on the same vertical-stroke blob, and the diversity of the input
-  noise is not reflected in the output. The generator found one region of the data manifold that
-  reliably fools the discriminator and stopped exploring — the failure mode that motivated
-  Wasserstein GANs, minibatch discrimination, and unrolled GANs.</em>
+  <img src="assets/ca4-cluster-themes.png" width="90%"><br>
+  <em><b>Fig. 4.5</b> — How often each cluster mentions a theme, relative to the whole test set
+  (above 1 means over-represented). Positive reviews lean on emotion (x1.26) and music (x1.15), and
+  negative reviews on boredom (x1.73). Cluster 2 over-represents horror, nostalgia and visuals. The
+  visual, story, acting and character themes stay between about 0.9 and 1.15 in every cluster.</em>
 </p>
 
-### RBM — [`RBM/RBM.py`](RBM/RBM.py)
+### Interpretation
 
-A Restricted Boltzmann Machine implemented in pure NumPy — no autodiff. 64 visible units
-(binarised digit pixels at threshold 0.5), 32 hidden units, trained by **contrastive divergence**
-with k = 1 Gibbs steps.
+Clusters 0 and 1 are the two sentiment poles and hold 88% of the test set. Cluster 2 is the only
+structure beyond positive versus negative. Its reviews are about 35% longer, split evenly between
+labels, and get uncertain scores. Their distinctive words are plot-summary nouns and hedges
+rather than evaluative words: these reviewers mostly retell the story, often of genre films or
+older classics, and give a mixed verdict.
 
-<p align="center">
-  <img src="assets/rbm-reconstruction.png" width="90%"><br>
-  <em><b>Fig. R.1</b> — Top: binarised inputs. Bottom: reconstructions after one up-down pass.
-  The 32-unit bottleneck acts as a lossy compressor — the gross topology of each digit survives,
-  the fine strokes do not, and the grey values in the reconstruction are the model's marginal
-  probabilities rather than hard samples. CD-1 is a biased approximation of the true gradient, so
-  this level of blur is the expected outcome, not a bug.</em>
-</p>
+Aspect themes such as visuals, story or acting do **not** form their own clusters. This is expected
+from the objective: fine-tuning on binary labels collapses the 64-d embedding onto the sentiment
+axis, plus a confidence dimension. The themes are present in the text, as the lifts in Fig. 4.5
+show, but not in the embedding. Two practical consequences follow:
+
+- Cluster 2 behaves like a "mixed" class. A three-way output, or routing low-confidence reviews
+  elsewhere, would help more than further binary tuning.
+- Recommendations based on what a viewer values (visuals vs. story) would need aspect-based
+  sentiment, or embeddings that are not fine-tuned only on polarity.
+
+> **Status.** All spec sections are covered. The results come from a single run and seed, and
+> reviews longer than 256 tokens are truncated. The cluster labels are qualitative, based on
+> keywords and sample reviews.
 
 ---
 
@@ -478,58 +678,3 @@ in-tree; the table below records where each came from and the commit it was take
 
 All three carry local edits that diverge from upstream, so they are **not** clean checkouts — diff
 against the linked commit before assuming any file is unmodified.
-
----
-
-## Reference code — [`PDL/`](PDL/)
-
-Vendored source from *Python Deep Learning* (Packt). Kept as a reference implementation set;
-not original work.
-
-| Chapter | Contents |
-|---------|----------|
-| 01–03 | Perceptrons, MLPs, MNIST from first principles |
-| 04 | Restricted Boltzmann Machines |
-| 05 | Convolutional networks (MNIST, CIFAR, astronomy data) |
-| 06 | Character-level language model (`war_and_peace.txt`) |
-| 07 | Game playing — minimax, Monte-Carlo, policy gradient, Connect-4, tic-tac-toe |
-| 08 | Reinforcement learning — Q-learning, DQN (CartPole, Breakout, Pong), actor-critic |
-| 09 | Anomaly detection — ECG pulses, MNIST outlier digits (notebooks with saved figures) |
-
----
-
-## Setup
-
-The project is managed with [uv](https://github.com/astral-sh/uv) and pinned to Python 3.11:
-
-```bash
-uv sync          # creates .venv from pyproject.toml + uv.lock
-```
-
-`pyproject.toml` covers the PyTorch-based work (CA0, CA4-2, GAN, RBM). The TensorFlow/Keras
-notebooks (CA1, CA2, CA3, CA4-567, FinalProject) were developed on Google Colab and need
-`tensorflow`, `tensorflow-hub`, `tensorflow-text`, `transformers`, `datasets`, `pretty_midi`, and
-`seaborn` installed separately.
-
-## Data & weights
-
-Datasets and trained weights are **deliberately not tracked** (see [`.gitignore`](.gitignore)) —
-they are large, and every one of them is downloadable or regenerable:
-
-| Artifact | Size | How to obtain |
-|----------|------|---------------|
-| `CA3/imdb_mini.pkl` | 26 MB | First cell of `CA3/Challenge3.ipynb` (`imdb.load_data`) |
-| `digit_gan_models.pth` | 1.6 MB | `python GAN/GAN.py` |
-| `FinalProject/example1/weights-804-0.01.hdf5` | 29 MB | Retrain, or fetch from the upstream repo |
-| `FinalProject/*/model.h5`, `tokenizer.p` | ~3 MB | `Generate_music.ipynb`, "save the model" cell |
-| CIFAR-10, IMDB, `aclImdb_v1` | — | Auto-downloaded by `torchvision` / `keras.datasets` / TF Hub |
-| `.venv/` | 647 MB | `uv sync` |
-
-`CA3/imdb_mini.pkl` was previously committed and has now been untracked. It still exists in the
-repository history, so a `git clone` will still pay for it until history is rewritten
-(`git filter-repo` or BFG) — untracking only prevents *future* growth.
-
-## License
-
-[MIT](LICENSE). The `PDL/` and `FinalProject/example*/` directories carry their own upstream
-licenses.
